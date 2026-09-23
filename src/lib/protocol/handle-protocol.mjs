@@ -94,7 +94,12 @@ import {
   personaHideForUnofficial,
   personaHideForCliZero,
 } from '../identity/crs-persona-usage.mjs'
-import { applyCacheTtlToUsage, cacheBreakpointsFromRoutingFile, resolveCacheTtl } from './cache-ttl.mjs'
+import {
+  applyCacheTtlToUsage,
+  cacheBreakpointsFromRoutingFile,
+  pinConversationCacheTtl,
+  resolveCacheTtl,
+} from './cache-ttl.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './web-search.mjs'
 import { dispatchStreamInference } from '../transport/kernel-router.mjs'
 import { syncClaudeKernelConfigsFromFile } from '../transport/rust-kernel-supervisor.mjs'
@@ -575,12 +580,10 @@ export function createHandleProtocol(deps) {
       boundSessionId: stickyBound?.sessionId || '',
       boundAccountId: stickyBound?.accountId || '',
     })
-    const requestedCacheTtl = resolveCacheTtl({
-      headers: req.headers,
-      body: inbound,
-      routingFile: routingConfigPath,
-      officialTraffic,
-    })
+    const requestedCacheTtl = pinConversationCacheTtl(
+      outboundSessionId,
+      resolveCacheTtl({ headers: req.headers, body: inbound, routingFile: routingConfigPath }),
+    )
     let cacheTtl = requestedCacheTtl
     let preserveCacheBreakpoints = false
     const cacheBreakpoints = cacheBreakpointsFromRoutingFile(routingConfigPath)
@@ -794,10 +797,11 @@ export function createHandleProtocol(deps) {
           const cliHop = resolveOfficialCcInference(selected.vm, routingNow) === 'cli-hop'
           let hopBody = body
           if (cliHop) {
-            preserveCacheBreakpoints = true
             const repaired = extra.repaired === true
             const resolvedPersona = resolveSlotPersonaPreset(selected.vm, routingNow)
-            if (!officialTraffic) {
+            const cliAppliesNodePersona =
+              !officialTraffic && resolvedPersona !== 'zero' && resolvedPersona !== 'official_full'
+            if (cliAppliesNodePersona) {
               hopBody = applyCrsUnofficialPersona(structuredClone(personaIn), {
                 officialClient: false,
                 routingFile: routingConfigPath,
@@ -809,14 +813,9 @@ export function createHandleProtocol(deps) {
                 identity,
               })
             }
-            const cliAppliesNodePersona = !officialTraffic && resolvedPersona !== 'zero'
             hopBody = prepareCliHopBody(repaired ? body : hopBody, {
               stream: upstreamStream,
               repaired,
-              cacheBreakpoints,
-              cacheControlLimit: Number(getRouting()?.compatibility?.cache_control_limit) || 4,
-              cacheTtl,
-              unofficial: !officialTraffic,
             })
             hopBody = await materializeRemoteImageSources(hopBody)
             if (identity) {
